@@ -1,121 +1,130 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
-import 'package:flutter/material.dart';
+import 'package:timezone/data/latest.dart' as tz;
 
-class NotificationHelper {
-  static FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+class LocalNotification {
+  final FlutterLocalNotificationsPlugin _notification =
       FlutterLocalNotificationsPlugin();
+  // Store the scheduled product IDs in a Set to avoid duplicates
+  final Set<int> _scheduledProductIds = {};
 
-  static void initializeNotifications(BuildContext context) async {
+  Future<void> initialize() async {
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('app_icon');
-    final InitializationSettings initializationSettings =
+
+    final InitializationSettings settings =
         InitializationSettings(android: initializationSettingsAndroid);
-    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
 
-    const AndroidNotificationChannel channel = AndroidNotificationChannel(
-      'channel_id',
-      'channel_name',
-      importance: Importance.high,
-      playSound: true,
-      enableVibration: true,
-    );
-    await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(channel);
-
-    // Handle notification click event
-    FlutterLocalNotificationsPlugin().initialize(
-      initializationSettings,
-    );
+    await _notification.initialize(settings);
+    tz.initializeTimeZones();
   }
 
-  static Future<void> insertProductWithNotification(
-      BuildContext context, Product product) async {
-    // Insert the product into the database
-    await insertIntoDatabase(product);
-
-    // Schedule a notification for the inserted product
-    final location =
-        tz.getLocation('Asia/Kolkata'); // Replace with your desired time zone
-    final now = tz.TZDateTime.now(location);
-    final scheduledDate = now.add(const Duration(seconds: 3));
-
-    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+  Future<NotificationDetails> _notificationDetails() async {
+    const AndroidNotificationDetails androidNotificationDetails =
         AndroidNotificationDetails(
       'channel_id',
       'channel_name',
+      channelDescription: 'channel_description',
       importance: Importance.high,
       priority: Priority.high,
       playSound: true,
       enableVibration: true,
       visibility: NotificationVisibility.public,
     );
-    const NotificationDetails platformChannelSpecifics =
-        NotificationDetails(android: androidPlatformChannelSpecifics);
 
-    await flutterLocalNotificationsPlugin.zonedSchedule(
-      product.id,
-      'Product Expiration',
-      'The product ${product.name} is expiring soon.',
+    return const NotificationDetails(android: androidNotificationDetails);
+  }
+
+  Future<void> showNotification({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    final details = await _notificationDetails();
+    await _notification.show(id, title, body, details);
+    // Remove the product ID from the set after showing the notification
+    _scheduledProductIds.remove(id);
+  }
+
+  Future<void> scheduleNotification({
+    required int id,
+    required String title,
+    required String body,
+    required tz.TZDateTime scheduledDate,
+  }) async {
+    // Check if the product ID is already scheduled
+    if (_scheduledProductIds.contains(id)) {
+      return; // Return early if already scheduled
+    }
+
+    // Add the product ID to the set of scheduled IDs
+    _scheduledProductIds.add(id);
+    final details = await _notificationDetails();
+    await _notification.zonedSchedule(
+      id,
+      title,
+      body,
       scheduledDate,
-      platformChannelSpecifics,
-      androidAllowWhileIdle: true,
+      details,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
-      matchDateTimeComponents: DateTimeComponents.dayOfWeekAndTime,
-      payload:
-          product.id.toString(), // Optional payload to identify the product
+      matchDateTimeComponents: DateTimeComponents.time,
     );
   }
 
-  static Future<void> insertIntoDatabase(Product product) async {
-    // Replace this with your actual database insertion logic
-    // Simulate inserting the product into the database with a delay
-    await Future.delayed(const Duration(seconds: 2));
-    print('Product inserted into the database: ${product.name}');
+  Future<tz.TZDateTime> _nextInstanceOfTime(
+      int hour, int minute, tz.Location timeZone) async {
+    final tz.TZDateTime now = tz.TZDateTime.now(timeZone);
+    tz.TZDateTime scheduledDate = tz.TZDateTime(
+      timeZone,
+      now.year,
+      now.month,
+      now.day,
+      hour,
+      minute,
+    );
+
+    if (scheduledDate.isBefore(now)) {
+      scheduledDate = scheduledDate.add(const Duration(days: 1));
+    }
+
+    return scheduledDate;
   }
-}
 
-class Product {
-  final int id;
-  final String name;
-  final DateTime expirationDate;
+  Future<void> scheduleNotificationOneDayBeforeExpiry({
+    required int id,
+    required String title,
+    required String body,
+    required DateTime expiryDate,
+    required String timeZoneIdentifier,
+  }) async {
+    // Initialize time zones
+    final tz.Location timeZone = tz.getLocation(timeZoneIdentifier);
+    final tz.TZDateTime expiryDateTime =
+        tz.TZDateTime.from(expiryDate, timeZone);
 
-  Product({required this.id, required this.name, required this.expirationDate});
-}
+    final now = tz.TZDateTime.now(timeZone);
 
-void main() {
-  runApp(MyApp());
-}
+    final message = 'The product is about to expire';
 
-class MyApp extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    // Initialize notifications
-    NotificationHelper.initializeNotifications(context);
+    if (expiryDateTime.isAfter(now) && !_scheduledProductIds.contains(id)) {
+      final tz.TZDateTime scheduledTime = tz.TZDateTime(
+        timeZone,
+        expiryDateTime.year,
+        expiryDateTime.month,
+        expiryDateTime.day,
+        14,
+        08,
+      ).subtract(const Duration(days: 1));
 
-    // Simulate scanning the expiry date and storing the product in the database
-    final scannedExpiryDate = DateTime.now().add(Duration(days: 2));
-    final product = Product(
-      id: 1,
-      name: 'Scanned Product',
-      expirationDate: scannedExpiryDate,
-    );
-
-    // Insert the product and schedule the notification
-    NotificationHelper.insertProductWithNotification(context, product);
-
-    return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Notification Example'),
-        ),
-        body: const Center(
-          child: Text('Check the console for notification details.'),
-        ),
-      ),
-    );
+      // Schedule the initial notification one day before the expiry date
+      await scheduleNotification(
+        id: id,
+        title: title,
+        body: '$message\n$body',
+        scheduledDate: scheduledTime,
+      );
+    }
   }
 }
